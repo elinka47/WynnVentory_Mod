@@ -14,7 +14,7 @@ public class ImageButton extends WynnventoryButton {
     private final Button.OnPress onPress;
 
     public ImageButton(int x, int y, int width, int height, Sprite sprite, Button.OnPress onPress, Component tooltip) {
-        super(x, y, width, height, Component.empty());
+        super(x, y, width, height, "");
         this.sprite = sprite;
         this.onPress = onPress;
         if (tooltip != null) {
@@ -24,7 +24,8 @@ public class ImageButton extends WynnventoryButton {
 
     @Override
     public void onPress(InputWithModifiers input) {
-        this.onPress.onPress(null); // Button.OnPress expects a Button, but we are a WynntilsButton (which is an AbstractButton)
+        this.onPress.onPress(
+                null); // Button.OnPress expects a Button, but we are a WynntilsButton (which is an AbstractButton)
     }
 
     @Override
@@ -39,9 +40,11 @@ public class ImageButton extends WynnventoryButton {
                 getY(),
                 getWidth(),
                 getHeight(),
-                spriteStart, 0,
-                sprite.width() / 2, sprite.height(),
-                sprite.width(), sprite.height()
-        );
+                spriteStart,
+                0,
+                sprite.width() / 2,
+                sprite.height(),
+                sprite.width(),
+                sprite.height());
     }
 }
