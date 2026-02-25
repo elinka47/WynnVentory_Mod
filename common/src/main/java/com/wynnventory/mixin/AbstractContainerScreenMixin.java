@@ -5,7 +5,7 @@ import com.wynnventory.events.InventoryKeyPressEvent;
 import com.wynnventory.events.RaidLobbyScreenInitEvent;
 import com.wynnventory.events.TrademarketTooltipRenderedEvent;
 import com.wynnventory.model.container.Container;
-import com.wynnventory.model.container.RaidWindowContainer;
+import com.wynnventory.model.container.RaidLobbyContainer;
 import com.wynnventory.model.container.TrademarketContainer;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
@@ -24,6 +24,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class AbstractContainerScreenMixin extends Screen {
     @Shadow
     protected Slot hoveredSlot;
+
+    @Shadow
+    protected int leftPos;
+
+    @Shadow
+    protected int topPos;
+
+    @Shadow
+    protected int imageWidth;
 
     protected AbstractContainerScreenMixin(Component component) {
         super(component);
@@ -50,9 +59,9 @@ public abstract class AbstractContainerScreenMixin extends Screen {
 
     @Inject(method = "init", at = @At("RETURN"))
     private void init(CallbackInfo ci) {
-        if (RaidWindowContainer.matchesTitle(this.getTitle().getString())) {
+        if (RaidLobbyContainer.matchesTitle(this.getTitle().getString())) {
             WynnventoryMod.postEvent(new RaidLobbyScreenInitEvent(
-                    (AbstractContainerScreen<?>) (Object) this, this::addRenderableWidget));
+                    this::addRenderableWidget, this.leftPos, this.topPos, this.imageWidth));
         }
     }
 }

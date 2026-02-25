@@ -2,12 +2,7 @@ package com.wynnventory.core;
 
 import com.wynnventory.api.service.IconService;
 import com.wynnventory.api.service.RewardService;
-import com.wynnventory.core.queue.QueueScheduler;
-import com.wynnventory.handler.CommandHandler;
-import com.wynnventory.handler.KeyBindHandler;
-import com.wynnventory.handler.LootRewardHandler;
-import com.wynnventory.handler.RaidWindowHandler;
-import com.wynnventory.handler.TooltipRenderHandler;
+import com.wynnventory.feature.crowdsource.QueueScheduler;
 import java.io.File;
 import net.neoforged.bus.api.BusBuilder;
 import net.neoforged.bus.api.Event;
@@ -18,8 +13,8 @@ import org.slf4j.LoggerFactory;
 
 public final class WynnventoryMod {
     public static final String MOD_ID = "wynnventory";
-
     private static final IEventBus eventBus = BusBuilder.builder().build();
+
     private static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     private static ModLoader loader;
@@ -44,12 +39,14 @@ public final class WynnventoryMod {
         IconService.INSTANCE.fetchAll();
         RewardService.INSTANCE.reloadAllPools();
         QueueScheduler.startScheduledTask();
+    }
 
-        eventBus.register(new LootRewardHandler());
-        eventBus.register(new TooltipRenderHandler());
-        eventBus.register(new RaidWindowHandler());
-        eventBus.register(new CommandHandler());
-        eventBus.register(new KeyBindHandler());
+    public static void registerEventListener(Object listener) {
+        eventBus.register(listener);
+    }
+
+    public static void unregisterEventListener(Object listener) {
+        eventBus.unregister(listener);
     }
 
     public static <T extends Event> void postEvent(T event) {

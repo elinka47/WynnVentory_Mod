@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Optional;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent;
 import net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipPositioner;
 import net.minecraft.client.gui.screens.inventory.tooltip.DefaultTooltipPositioner;
@@ -63,10 +64,30 @@ public abstract class RenderUtils {
         }
 
         // Clamp inside screen bounds
-        priceX = clamp(priceX, 4, screenW - priceW - 4);
-        priceY = clamp(priceY, 6, screenH - priceH - 4);
+        priceX = Math.clamp(priceX, 4, screenW - priceW - 4);
+        priceY = Math.clamp(priceY, 6, screenH - priceH - 4);
 
         return new Vector2i((int) (priceX / priceScale), priceY);
+    }
+
+    public static void drawTooltip(
+            GuiGraphics guiGraphics,
+            int mouseX,
+            int mouseY,
+            List<Component> vanillaLines,
+            List<Component> customLines) {
+        List<ClientTooltipComponent> vanillaComponents = RenderUtils.toClientComponents(vanillaLines, Optional.empty());
+        List<ClientTooltipComponent> customComponents = RenderUtils.toClientComponents(customLines, Optional.empty());
+
+        Vector2i tooltipCoords =
+                RenderUtils.calculateTooltipCoords(mouseX, mouseY, vanillaComponents, customComponents);
+        ClientTooltipPositioner fixed = new RenderUtils.FixedTooltipPositioner(tooltipCoords.x, tooltipCoords.y);
+
+        float scale = RenderUtils.getScaleFactor(customComponents);
+        guiGraphics.pose().pushMatrix();
+        guiGraphics.pose().scale(scale, scale);
+        guiGraphics.renderTooltip(Minecraft.getInstance().font, customComponents, mouseX, mouseY, fixed, null);
+        guiGraphics.pose().popMatrix();
     }
 
     public static List<ClientTooltipComponent> toClientComponents(
@@ -129,10 +150,6 @@ public abstract class RenderUtils {
             h += c.getHeight(font);
         }
         return h;
-    }
-
-    private static int clamp(int v, int min, int max) {
-        return Math.max(min, Math.min(max, v));
     }
 
     public static final class FixedTooltipPositioner implements ClientTooltipPositioner {

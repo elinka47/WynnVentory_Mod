@@ -2,15 +2,16 @@ package com.wynnventory.gui.widget;
 
 import com.wynntils.core.components.Services;
 import com.wynntils.core.text.StyledText;
-import com.wynntils.models.gear.type.GearTier;
 import com.wynntils.screens.guides.GuideItemStack;
 import com.wynntils.screens.guides.aspect.GuideAspectItemStack;
 import com.wynntils.screens.guides.augment.AmplifierItemStack;
 import com.wynntils.screens.guides.augment.InsulatorItemStack;
 import com.wynntils.screens.guides.augment.SimulatorItemStack;
+import com.wynntils.screens.guides.emerald.GuideEmeraldItemStack;
 import com.wynntils.screens.guides.gear.GuideGearItemStack;
+import com.wynntils.screens.guides.misc.GuideDungeonKeyItemStack;
+import com.wynntils.screens.guides.misc.RuneItemStack;
 import com.wynntils.screens.guides.powder.GuidePowderItemStack;
-import com.wynntils.screens.guides.rune.RuneItemStack;
 import com.wynntils.screens.guides.tome.GuideTomeItemStack;
 import com.wynntils.utils.MathUtils;
 import com.wynntils.utils.colors.CommonColors;
@@ -22,10 +23,12 @@ import com.wynntils.utils.render.Texture;
 import com.wynntils.utils.render.type.HorizontalAlignment;
 import com.wynntils.utils.render.type.TextShadow;
 import com.wynntils.utils.render.type.VerticalAlignment;
+import com.wynnventory.gui.screen.RewardScreen;
 import com.wynnventory.model.item.simple.SimpleGearItem;
 import com.wynnventory.model.item.simple.SimpleItem;
 import com.wynnventory.model.item.simple.SimpleTierItem;
 import com.wynnventory.util.HttpUtils;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.input.InputWithModifiers;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -47,20 +50,22 @@ public class ItemButton<T extends GuideItemStack> extends WynnventoryButton {
     public void renderContents(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         // Colored highlight like Wynntils (scaled to our box)
         CustomColor color = getCustomColor();
-        RenderUtils.drawTexturedRect(
-                g,
-                Texture.HIGHLIGHT.identifier(),
-                color,
-                getX() - 1,
-                getY() - 1,
-                width + 2,
-                height + 2,
-                0,
-                0,
-                18,
-                18,
-                Texture.HIGHLIGHT.width(),
-                Texture.HIGHLIGHT.height());
+        if (color != CustomColor.NONE) {
+            RenderUtils.drawTexturedRect(
+                    g,
+                    Texture.HIGHLIGHT.identifier(),
+                    color,
+                    getX() - 1f,
+                    getY() - 1f,
+                    width + 2f,
+                    height + 2f,
+                    0,
+                    0,
+                    18,
+                    18,
+                    Texture.HIGHLIGHT.width(),
+                    Texture.HIGHLIGHT.height());
+        }
 
         // Draw item (MC item icon anchored at button origin, scaled)
         g.pose().pushMatrix();
@@ -70,7 +75,12 @@ public class ItemButton<T extends GuideItemStack> extends WynnventoryButton {
         RenderUtils.renderItem(g, itemStack, 0, 0);
         g.pose().popMatrix();
 
-        if (simpleItem instanceof SimpleTierItem) {
+        if (simpleItem instanceof SimpleTierItem
+                || itemStack instanceof GuideEmeraldItemStack
+                || itemStack instanceof RuneItemStack
+                || itemStack instanceof GuidePowderItemStack
+                || itemStack instanceof AmplifierItemStack
+                || itemStack instanceof GuideDungeonKeyItemStack) {
             renderText(
                     g,
                     String.valueOf(simpleItem.getAmount()),
@@ -85,8 +95,8 @@ public class ItemButton<T extends GuideItemStack> extends WynnventoryButton {
             RenderUtils.drawScalingTexturedRect(
                     g,
                     Texture.FAVORITE_ICON.identifier(),
-                    getX() + (int) (12 * favScale),
-                    getY() - (int) (4 * favScale),
+                    getX() + (12 * favScale),
+                    getY() - (4 * favScale),
                     (int) (9 * favScale),
                     (int) (9 * favScale),
                     Texture.FAVORITE_ICON.width(),
@@ -113,10 +123,11 @@ public class ItemButton<T extends GuideItemStack> extends WynnventoryButton {
             }
         }
 
-        // Causes price tooltip to render behind ItemButton textures. Maybe fix later?
-        //        if (this.isHovered()) {
-        //            g.setTooltipForNextFrame(Minecraft.getInstance().font, itemStack, mouseX, mouseY);
-        //        }
+        // Ugly approach to prevent price tooltip rendering behind RewardScreen assets
+        String screenTitle = Minecraft.getInstance().screen.getTitle().getString();
+        if (this.isHovered() && !screenTitle.equals(RewardScreen.CONTAINER_TITLE)) {
+            g.setTooltipForNextFrame(Minecraft.getInstance().font, itemStack, mouseX, mouseY);
+        }
     }
 
     @Override
@@ -138,13 +149,17 @@ public class ItemButton<T extends GuideItemStack> extends WynnventoryButton {
     }
 
     @Override
-    public void onPress(InputWithModifiers inputWithModifiers) {}
+    public void onPress(InputWithModifiers inputWithModifiers) {
+        // Item buttons are non-interactive
+    }
 
     private void buildTooltip() {
         switch (itemStack) {
             case GuideGearItemStack gear -> gear.buildTooltip();
             case GuideTomeItemStack tome -> tome.buildTooltip();
-            default -> {}
+            default -> {
+                // by default no special tooltips need to be generated
+            }
         }
     }
 
@@ -158,7 +173,6 @@ public class ItemButton<T extends GuideItemStack> extends WynnventoryButton {
                 CustomColor.fromChatFormatting(aspect.getAspectInfo().gearTier().getChatFormatting());
             case GuidePowderItemStack powder ->
                 CustomColor.fromChatFormatting(powder.getElement().getLightColor());
-            case RuneItemStack rune -> CustomColor.fromChatFormatting(GearTier.NORMAL.getChatFormatting());
             case AmplifierItemStack amplifier ->
                 CustomColor.fromChatFormatting(amplifier.getGearTier().getChatFormatting());
             case InsulatorItemStack insulator ->
@@ -186,9 +200,9 @@ public class ItemButton<T extends GuideItemStack> extends WynnventoryButton {
                         g,
                         StyledText.fromString(text),
                         getX(),
-                        getX() + getWidth(),
+                        (float) getX() + getWidth(),
                         getY(),
-                        getY() + getHeight(),
+                        (float) getY() + getHeight(),
                         0,
                         color,
                         hAlign,

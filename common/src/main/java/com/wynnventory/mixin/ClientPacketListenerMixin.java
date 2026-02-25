@@ -9,13 +9,12 @@ import com.wynnventory.events.CommandSentEvent;
 import com.wynnventory.events.RaidLobbyPopulatedEvent;
 import com.wynnventory.events.RewardPreviewOpenedEvent;
 import com.wynnventory.model.container.Container;
-import com.wynnventory.model.container.RaidWindowContainer;
+import com.wynnventory.model.container.RaidLobbyContainer;
 import com.wynnventory.model.reward.RewardPool;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.CommonListenerCookie;
-import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.network.Connection;
@@ -68,7 +67,7 @@ public abstract class ClientPacketListenerMixin extends ClientCommonPacketListen
             WynnventoryMod.postEvent(new RewardPreviewOpenedEvent.Lootrun(packet.items(), packet.containerId(), title));
         if (RewardPool.isRaidTitle(title))
             WynnventoryMod.postEvent(new RewardPreviewOpenedEvent.Raid(packet.items(), packet.containerId(), title));
-        if (RaidWindowContainer.matchesTitle(title))
+        if (RaidLobbyContainer.matchesTitle(title))
             WynnventoryMod.postEvent(new RaidLobbyPopulatedEvent(packet.items(), packet.containerId(), title));
     }
 
@@ -88,7 +87,6 @@ public abstract class ClientPacketListenerMixin extends ClientCommonPacketListen
 
         RootCommandNode<SharedSuggestionProvider> root = this.commands.getRoot();
 
-        WynnventoryMod.postEvent(
-                new CommandAddedEvent(root, CommandBuildContext.simple(this.registryAccess, this.enabledFeatures)));
+        WynnventoryMod.postEvent(new CommandAddedEvent(root));
     }
 }

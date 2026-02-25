@@ -1,6 +1,7 @@
 package com.wynnventory.gui.screen;
 
 import com.wynntils.core.components.Models;
+import com.wynntils.models.activities.type.Dungeon;
 import com.wynntils.models.gear.type.GearTier;
 import com.wynntils.screens.guides.GuideItemStack;
 import com.wynntils.screens.guides.aspect.GuideAspectItemStack;
@@ -8,11 +9,13 @@ import com.wynntils.screens.guides.augment.AmplifierItemStack;
 import com.wynntils.screens.guides.augment.InsulatorItemStack;
 import com.wynntils.screens.guides.augment.SimulatorItemStack;
 import com.wynntils.screens.guides.gear.GuideGearItemStack;
+import com.wynntils.screens.guides.misc.GuideDungeonKeyItemStack;
+import com.wynntils.screens.guides.misc.RuneItemStack;
 import com.wynntils.screens.guides.powder.GuidePowderItemStack;
-import com.wynntils.screens.guides.rune.RuneItemStack;
 import com.wynntils.screens.guides.tome.GuideTomeItemStack;
 import com.wynntils.utils.MathUtils;
 import com.wynnventory.api.service.RewardService;
+import com.wynnventory.core.WynnventoryMod;
 import com.wynnventory.core.config.ModConfig;
 import com.wynnventory.core.config.settings.RewardScreenSettings;
 import com.wynnventory.gui.Sprite;
@@ -26,8 +29,10 @@ import com.wynnventory.model.item.simple.SimpleItemType;
 import com.wynnventory.model.item.simple.SimpleTierItem;
 import com.wynnventory.model.reward.RewardPool;
 import com.wynnventory.model.reward.RewardType;
+import com.wynnventory.util.ChatUtils;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +49,8 @@ import net.minecraft.network.chat.Component;
 
 public class RewardScreen extends Screen {
     private final Screen parent;
+    public static final String CONTAINER_TITLE = "Reward Screen";
+
     private static RewardType activeType = RewardType.LOOTRUN;
     private static final Map<String, GuideItemStack> wynnItemsByName = new HashMap<>();
 
@@ -54,8 +61,6 @@ public class RewardScreen extends Screen {
     // Global scaling derived from tallest pool to fit vertically
     private double globalPoolScale = 1.0;
     private boolean scaleReady = false;
-    private int lastWidth = -1;
-    private int lastHeight = -1;
 
     // Recalc control to avoid repeated heavy work during drag-resize
     private boolean recalculating = false;
@@ -103,7 +108,7 @@ public class RewardScreen extends Screen {
 
     public static void open() {
         Minecraft mc = Minecraft.getInstance();
-        mc.setScreen(new RewardScreen(Component.empty(), mc.screen));
+        mc.setScreen(new RewardScreen(Component.literal(CONTAINER_TITLE), mc.screen));
     }
 
     private void triggerRecalc() {
@@ -118,6 +123,7 @@ public class RewardScreen extends Screen {
 
     @Override
     protected void init() {
+        itemWidgets.clear();
         // During live window resizing, skip heavy widget rebuilds entirely.
         // We'll rebuild once after the resize settles via triggerRecalc() in resize().
         if (this.suppressInitRecalc) {
@@ -160,7 +166,7 @@ public class RewardScreen extends Screen {
                 IMAGE_BUTTON_WIDTH,
                 IMAGE_BUTTON_HEIGHT,
                 Sprite.SETTINGS_BUTTON,
-                b -> SettingsScreen.open(),
+                b -> SettingsScreen.open(this),
                 Component.translatable("gui.wynnventory.reward.button.config")));
 
         // Reload Button
@@ -170,15 +176,11 @@ public class RewardScreen extends Screen {
                 IMAGE_BUTTON_WIDTH,
                 IMAGE_BUTTON_HEIGHT,
                 Sprite.RELOAD_BUTTON,
-                b -> RewardService.INSTANCE
-                        .reloadAllPools()
-                        .thenRun(() -> this.minecraft.execute(this::rebuildWidgets)),
+                b -> RewardService.INSTANCE.reloadAllPools().thenRun(() -> {
+                    this.triggerRecalc();
+                    this.minecraft.execute(this::rebuildWidgets);
+                }),
                 Component.translatable("gui.wynnventory.reward.button.reload")));
-
-        // Carousel buttons
-        List<RewardPool> activePools = getActivePools();
-        int contentWidth = getContentWidth();
-        int poolWidth = Sprite.LOOTRUN_POOL_TOP_SECTION.width();
 
         int middleY = (this.height - NAV_BUTTON_HEIGHT) / 2;
         ImageButton prevButton = new ImageButton(
@@ -187,13 +189,7 @@ public class RewardScreen extends Screen {
                 NAV_BUTTON_WIDTH * 2,
                 NAV_BUTTON_HEIGHT * 2,
                 Sprite.ARROW_LEFT,
-                button -> {
-                    scrollIndex--;
-                    if (scrollIndex < 0) {
-                        scrollIndex = activePools.size() - 1;
-                    }
-                    this.rebuildWidgets();
-                },
+                button -> scrollLeft(),
                 null);
         this.addRenderableWidget(prevButton);
 
@@ -203,13 +199,7 @@ public class RewardScreen extends Screen {
                 NAV_BUTTON_WIDTH * 2,
                 NAV_BUTTON_HEIGHT * 2,
                 Sprite.ARROW_RIGHT,
-                button -> {
-                    scrollIndex++;
-                    if (scrollIndex >= activePools.size()) {
-                        scrollIndex = 0;
-                    }
-                    this.rebuildWidgets();
-                },
+                button -> scrollRight(),
                 null);
         this.addRenderableWidget(nextButton);
 
@@ -305,6 +295,36 @@ public class RewardScreen extends Screen {
     }
 
     @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double amountX, double amountY) {
+        if (amountY > 0) {
+            scrollLeft();
+        } else if (amountY < 0) {
+            scrollRight();
+        }
+        return true;
+    }
+
+    private void scrollLeft() {
+        List<RewardPool> activePools = getActivePools();
+        if (activePools.isEmpty()) return;
+        scrollIndex--;
+        if (scrollIndex < 0) {
+            scrollIndex = activePools.size() - 1;
+        }
+        this.rebuildWidgets();
+    }
+
+    private void scrollRight() {
+        List<RewardPool> activePools = getActivePools();
+        if (activePools.isEmpty()) return;
+        scrollIndex++;
+        if (scrollIndex >= activePools.size()) {
+            scrollIndex = 0;
+        }
+        this.rebuildWidgets();
+    }
+
+    @Override
     public void onClose() {
         this.minecraft.setScreen(this.parent);
     }
@@ -334,6 +354,10 @@ public class RewardScreen extends Screen {
                         .map(RuneItemStack::new)
                         .toList()),
                 s -> s.getHoverName().getString());
+
+        addStacks(Models.Emerald.getAllEmeraldItems(), s -> s.getHoverName().getString());
+
+        addStacks(getDungeonKeyItemStacks(), s -> s.getHoverName().getString());
 
         InsulatorItemStack insulatorItemStack = new InsulatorItemStack();
         wynnItemsByName.put(insulatorItemStack.getHoverName().getString(), insulatorItemStack);
@@ -492,7 +516,9 @@ public class RewardScreen extends Screen {
         this.addRenderableWidget(new FilterButton(x, y, w, 16, label, icon, getter, setter, () -> {
             try {
                 ModConfig.getInstance().save();
-            } catch (IOException ignored) {
+            } catch (IOException e) {
+                ChatUtils.error("Failed to save filter settings.");
+                WynnventoryMod.logError("Failed to save filter settings.", e);
             }
             this.rebuildWidgets();
         }));
@@ -557,7 +583,7 @@ public class RewardScreen extends Screen {
         }
 
         AtomicInteger remaining = new AtomicInteger(pools.size());
-        Map<RewardPool, List<SimpleItem>> itemsByPool = new HashMap<>();
+        Map<RewardPool, List<SimpleItem>> itemsByPool = new EnumMap<>(RewardPool.class);
 
         for (RewardPool pool : pools) {
             RewardService.INSTANCE.getItems(pool).whenComplete((items, ex) -> Minecraft.getInstance()
@@ -591,7 +617,7 @@ public class RewardScreen extends Screen {
             if (h > tallest) tallest = h;
         }
 
-        double available = this.height - MARGIN_Y - BOTTOM_PADDING;
+        double available = (double) this.height - MARGIN_Y - BOTTOM_PADDING;
         if (tallest <= 0) {
             tallest =
                     Sprite.LOOTRUN_POOL_TOP_SECTION.height() * TOP_AWNING_OVERLAP + Sprite.POOL_BOTTOM_SECTION.height();
@@ -599,8 +625,6 @@ public class RewardScreen extends Screen {
 
         this.globalPoolScale = available / tallest;
         this.scaleReady = true;
-        this.lastWidth = this.width;
-        this.lastHeight = this.height;
         this.recalculating = false;
 
         // If multiple resizes happened during calculation, run one more pass
@@ -641,7 +665,7 @@ public class RewardScreen extends Screen {
     private List<SectionData> buildSections(List<SimpleItem> items) {
         List<SectionData> sections = new ArrayList<>();
         if (activeType == RewardType.RAID) {
-            Map<SimpleItemType, List<SimpleItem>> grouped = new HashMap<>();
+            Map<SimpleItemType, List<SimpleItem>> grouped = new EnumMap<>(SimpleItemType.class);
             for (SimpleItem item : items) {
                 SimpleItemType type = item.getItemTypeEnum();
                 grouped.computeIfAbsent(type, k -> new ArrayList<>()).add(item);
@@ -657,7 +681,7 @@ public class RewardScreen extends Screen {
                                     .contains(i.getItemTypeEnum()))
                             .toList()));
         } else { // LOOTRUN by rarity tiers
-            Map<GearTier, List<SimpleItem>> groupedByRarity = new HashMap<>();
+            Map<GearTier, List<SimpleItem>> groupedByRarity = new EnumMap<>(GearTier.class);
             for (SimpleItem item : items) {
                 groupedByRarity
                         .computeIfAbsent(item.getRarityEnum(), k -> new ArrayList<>())
@@ -682,6 +706,26 @@ public class RewardScreen extends Screen {
         }
         renderBottomSection(startX, currentY, totalWidth, poolScale);
         renderPoolHeader(startX, totalWidth, poolScale, pool.getShortName());
+    }
+
+    private List<GuideDungeonKeyItemStack> getDungeonKeyItemStacks() {
+        List<GuideDungeonKeyItemStack> dungeonStacks = new ArrayList<>();
+        for (Dungeon dungeon : Dungeon.values()) {
+            if (dungeon.doesExist()) {
+                dungeonStacks.add(new GuideDungeonKeyItemStack(dungeon, false, false));
+                dungeonStacks.add(new GuideDungeonKeyItemStack(dungeon, false, true));
+            }
+
+            if (dungeon.doesCorruptedExist()) {
+                dungeonStacks.add(new GuideDungeonKeyItemStack(dungeon, true, false));
+
+                if (dungeon == Dungeon.LOST_SANCTUARY) { // Wynncraft jank... Hopefully forgery gets redone soon
+                    dungeonStacks.add(new GuideDungeonKeyItemStack(dungeon, true, true));
+                }
+            }
+        }
+
+        return dungeonStacks;
     }
 
     // Lightweight inner model to represent a visual section in a pool
