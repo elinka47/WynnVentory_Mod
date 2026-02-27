@@ -22,6 +22,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
+import org.apache.commons.io.FileUtils;
 
 public class AutoUpdateFeature {
     private static final String MODRINTH_UPDATE_API = "https://api.modrinth.com/v2/version_file/%s/update";
@@ -34,7 +35,8 @@ public class AutoUpdateFeature {
 
     private static void checkForUpdates() {
         if (WynnventoryMod.isBeta()) {
-            ServerJoinMessageFeature.queueMessage(MessageSeverity.INFO, "feature.wynnventory.update.betaNotification");
+            ServerJoinMessageFeature.queueGameMessage(
+                    MessageSeverity.INFO, "feature.wynnventory.update.betaNotification");
             return;
         }
 
@@ -45,7 +47,7 @@ public class AutoUpdateFeature {
         }
 
         try {
-            String url = String.format(MODRINTH_UPDATE_API, getFileHash(WynnventoryMod.getModFile()));
+            String url = String.format(MODRINTH_UPDATE_API, getFileHash(currentFile));
 
             HttpUtils.sendPostRequest(new URI(url), new UpdateRequest()).thenAccept(resp -> {
                 if (resp.statusCode() != 200) {
@@ -57,12 +59,19 @@ public class AutoUpdateFeature {
 
                     String replacedVersion = updateResp.versionNumber.replace("v", "");
                     if (!WynnventoryMod.getVersion().equalsIgnoreCase(replacedVersion)) {
-                        ServerJoinMessageFeature.queueMessage(
+                        ServerJoinMessageFeature.queueGameMessage(
                                 MessageSeverity.INFO,
                                 Component.translatable(
                                         "feature.wynnventory.update.notifyUserOfUpdate", replacedVersion));
-                        downloadArtifact(updateResp.files.getFirst());
-                        scheduleFileReplacementOnShutdown(WynnventoryMod.getModFile());
+
+                        File updateJar = downloadArtifact(updateResp.files.getFirst());
+
+                        ServerJoinMessageFeature.queueGameMessage(
+                                MessageSeverity.INFO,
+                                Component.translatable(
+                                        "feature.wynnventory.update.notifyUserOfUpdate.success", replacedVersion));
+
+                        scheduleFileReplacementOnShutdown(currentFile, updateJar);
                     }
                 } catch (JsonProcessingException e) {
                     WynnventoryMod.logError("Failed to parse update response", e);
@@ -94,20 +103,29 @@ public class AutoUpdateFeature {
         return sb.toString();
     }
 
-    private static void downloadArtifact(Artifact artifact) throws IOException, URISyntaxException {
+    private static File downloadArtifact(Artifact artifact) throws IOException, URISyntaxException {
         URI uri = new URI(artifact.url);
         Path newFilePath = getModFilePath(artifact.filename);
         Files.copy(uri.toURL().openStream(), newFilePath, StandardCopyOption.REPLACE_EXISTING);
+        return newFilePath.toFile();
     }
 
     private static Path getModFilePath(String fileName) {
         return new File(Minecraft.getInstance().gameDirectory, "mods/" + fileName).toPath();
     }
 
-    private static void scheduleFileReplacementOnShutdown(File oldJar) {
+    private static void scheduleFileReplacementOnShutdown(File oldJar, File newJar) {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
-                Files.deleteIfExists(oldJar.toPath());
+                if (oldJar == null || !oldJar.exists() || oldJar.isDirectory()) {
+                    WynnventoryMod.logError("Mod jar file not found or incorrect.");
+                    return;
+                }
+
+                FileUtils.copyFile(newJar, oldJar);
+                Files.deleteIfExists(newJar.toPath());
+
+                WynnventoryMod.logInfo("Successfully applied update!");
             } catch (IOException e) {
                 WynnventoryMod.logError("Failed to delete old mod file", e);
             }
