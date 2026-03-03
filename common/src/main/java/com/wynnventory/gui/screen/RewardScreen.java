@@ -17,13 +17,16 @@ import com.wynntils.utils.MathUtils;
 import com.wynnventory.api.service.RewardService;
 import com.wynnventory.core.WynnventoryMod;
 import com.wynnventory.core.config.ModConfig;
+import com.wynnventory.core.config.settings.RewardLayoutMode;
 import com.wynnventory.core.config.settings.RewardScreenSettings;
 import com.wynnventory.gui.Sprite;
 import com.wynnventory.gui.widget.FilterButton;
 import com.wynnventory.gui.widget.ImageButton;
 import com.wynnventory.gui.widget.ImageWidget;
 import com.wynnventory.gui.widget.ItemButton;
+import com.wynnventory.gui.widget.RectWidget;
 import com.wynnventory.gui.widget.TextWidget;
+import com.wynnventory.gui.widget.WynnventoryButton;
 import com.wynnventory.model.item.simple.SimpleItem;
 import com.wynnventory.model.item.simple.SimpleItemType;
 import com.wynnventory.model.item.simple.SimpleTierItem;
@@ -55,11 +58,14 @@ public class RewardScreen extends Screen {
     private static final Map<String, GuideItemStack> wynnItemsByName = new HashMap<>();
 
     private final List<ItemButton<GuideItemStack>> itemWidgets = new ArrayList<>();
+    private final List<WynnventoryButton> compactClippedWidgets = new ArrayList<>();
+    private int compactHeaderHeight = 12;
 
     private int scrollIndex = 0;
 
     // Global scaling derived from tallest pool to fit vertically
     private double globalPoolScale = 1.0;
+    private double tallestNaturalHeight = 0.0;
     private boolean scaleReady = false;
 
     // Recalc control to avoid repeated heavy work during drag-resize
@@ -73,6 +79,7 @@ public class RewardScreen extends Screen {
     private static final int MARGIN_Y = 40;
     private static final int MARGIN_X = 55;
     private static final int BOTTOM_PADDING = 20;
+    private static final int ROW_SPACING_Y = 15;
 
     // Tab buttons (Lootrun / Raid)
     private static final int TAB_BUTTON_WIDTH = 100;
@@ -92,6 +99,7 @@ public class RewardScreen extends Screen {
 
     // Sidebar
     private static final int SIDEBAR_WIDTH = 115;
+    private static final int COMPACT_SIDEBAR_WIDTH = 30;
     private static final int SIDEBAR_Y = NAV_BUTTON_Y;
 
     // Layout constants for pools
@@ -101,6 +109,25 @@ public class RewardScreen extends Screen {
     private static final int INTERIOR_BODY_WIDTH = 176;
     private static final double TOP_AWNING_OVERLAP = 0.5; // Sections start halfway into pool top
 
+    // Compact layout constants
+    private static final int COMPACT_ITEM_SIZE = 14;
+    private static final int COMPACT_ITEM_PITCH = 16;
+    private static final int COMPACT_COL_MIN_WIDTH = 70;
+    private static final int COMPACT_SECTION_HEADER_HEIGHT = 12;
+    private static final float COMPACT_HEADER_LABEL_SCALE = 0.85f;
+    private static final int COMPACT_COL_SPACING = 4;
+    private static final float COMPACT_SECTION_LABEL_SCALE = 0.7f;
+    private static final int COMPACT_LEFT_MARGIN = 10;
+
+    // Compact scroll state (per-column vertical offsets)
+    private final Map<RewardPool, Integer> compactScrollOffsets = new EnumMap<>(RewardPool.class);
+    // Tracks content height per column for scroll clamping
+    private final Map<RewardPool, Integer> compactContentHeights = new EnumMap<>(RewardPool.class);
+    // Cached column layout for scroll hit-testing
+    private int compactStartX;
+    private int compactColWidth;
+    private List<RewardPool> compactPools = List.of();
+
     public RewardScreen(Component title, Screen parent) {
         super(title);
         this.parent = parent;
@@ -109,6 +136,10 @@ public class RewardScreen extends Screen {
     public static void open() {
         Minecraft mc = Minecraft.getInstance();
         mc.setScreen(new RewardScreen(Component.literal(CONTAINER_TITLE), mc.screen));
+    }
+
+    private boolean isCompactMode() {
+        return ModConfig.getInstance().getRewardScreenSettings().getLayoutMode() == RewardLayoutMode.COMPACT;
     }
 
     private void triggerRecalc() {
@@ -124,11 +155,14 @@ public class RewardScreen extends Screen {
     @Override
     protected void init() {
         itemWidgets.clear();
+        compactClippedWidgets.clear();
         // During live window resizing, skip heavy widget rebuilds entirely.
         // We'll rebuild once after the resize settles via triggerRecalc() in resize().
         if (this.suppressInitRecalc) {
             return;
         }
+
+        RewardScreenSettings s = ModConfig.getInstance().getRewardScreenSettings();
 
         if (wynnItemsByName.isEmpty()) {
             loadGuideItems();
@@ -141,6 +175,7 @@ public class RewardScreen extends Screen {
         Button lootrunButton = Button.builder(Component.translatable("gui.wynnventory.reward.lootrun"), button -> {
                     activeType = RewardType.LOOTRUN;
                     this.scrollIndex = 0;
+                    this.compactScrollOffsets.clear();
                     this.triggerRecalc();
                 })
                 .bounds(startX, startY, TAB_BUTTON_WIDTH, TAB_BUTTON_HEIGHT)
@@ -152,6 +187,7 @@ public class RewardScreen extends Screen {
         Button raidButton = Button.builder(Component.translatable("gui.wynnventory.reward.raid"), button -> {
                     activeType = RewardType.RAID;
                     this.scrollIndex = 0;
+                    this.compactScrollOffsets.clear();
                     this.triggerRecalc();
                 })
                 .bounds(startX + TAB_BUTTON_WIDTH + TAB_BUTTON_SPACING, startY, TAB_BUTTON_WIDTH, TAB_BUTTON_HEIGHT)
@@ -182,49 +218,35 @@ public class RewardScreen extends Screen {
                 }),
                 Component.translatable("gui.wynnventory.reward.button.reload")));
 
-        int middleY = (this.height - NAV_BUTTON_HEIGHT) / 2;
-        ImageButton prevButton = new ImageButton(
-                NAV_BUTTON_MARGIN,
-                middleY,
-                NAV_BUTTON_WIDTH * 2,
-                NAV_BUTTON_HEIGHT * 2,
-                Sprite.ARROW_LEFT,
-                button -> scrollLeft(),
-                null);
-        this.addRenderableWidget(prevButton);
+        // Carousel nav arrows (only in default mode, and only when pools exceed page
+        // capacity)
+        if (!isCompactMode()) {
+            int maxPerPage = Math.min(s.getMaxPoolsPerPage(), 2 * getCurrentColumns());
+            if (getActivePools().size() > maxPerPage) {
+                int middleY = (this.height - NAV_BUTTON_HEIGHT) / 2;
+                ImageButton prevButton = new ImageButton(
+                        NAV_BUTTON_MARGIN,
+                        middleY,
+                        NAV_BUTTON_WIDTH * 2,
+                        NAV_BUTTON_HEIGHT * 2,
+                        Sprite.ARROW_LEFT,
+                        button -> scrollLeft(),
+                        null);
+                this.addRenderableWidget(prevButton);
 
-        ImageButton nextButton = new ImageButton(
-                this.width - 130 - NAV_BUTTON_MARGIN,
-                middleY,
-                NAV_BUTTON_WIDTH * 2,
-                NAV_BUTTON_HEIGHT * 2,
-                Sprite.ARROW_RIGHT,
-                button -> scrollRight(),
-                null);
-        this.addRenderableWidget(nextButton);
+                ImageButton nextButton = new ImageButton(
+                        this.width - 130 - NAV_BUTTON_MARGIN,
+                        middleY,
+                        NAV_BUTTON_WIDTH * 2,
+                        NAV_BUTTON_HEIGHT * 2,
+                        Sprite.ARROW_RIGHT,
+                        button -> scrollRight(),
+                        null);
+                this.addRenderableWidget(nextButton);
+            }
+        }
 
         // === SIDEBAR ===
-        int sidebarX = this.width - SIDEBAR_WIDTH - 10;
-
-        // Filters
-        RewardScreenSettings s = ModConfig.getInstance().getRewardScreenSettings();
-        int filterY = SIDEBAR_Y;
-
-        // Filter background texture
-        this.addRenderableWidget(new ImageWidget(
-                sidebarX + 5,
-                filterY,
-                Sprite.FILTER_SECTION.width(),
-                Sprite.FILTER_SECTION.height(),
-                Sprite.FILTER_SECTION));
-
-        Component filterTitle = Component.literal("Filters");
-        int textW = this.font.width(filterTitle);
-        int textX = (sidebarX + 7) + (Sprite.FILTER_SECTION.width() - textW) / 2;
-        int textY = filterY + 3; // Positioned within the plaque area of the new texture
-        this.addRenderableWidget(new TextWidget(textX, textY, filterTitle));
-
-        // Grid of 5 buttons per row
         record FilterItem(String label, Sprite icon, BooleanSupplier getter, Consumer<Boolean> setter) {}
         List<FilterItem> filterItems = List.of(
                 new FilterItem("Mythic", Sprite.MYTHIC_ICON, s::isShowMythic, s::setShowMythic),
@@ -235,28 +257,81 @@ public class RewardScreen extends Screen {
                 new FilterItem("Common", Sprite.COMMON_ICON, s::isShowCommon, s::setShowCommon),
                 new FilterItem("Set", Sprite.SET_ICON, s::isShowSet, s::setShowSet));
 
-        int filterStartX = sidebarX + 9;
-        int filterStartY = filterY + 18;
-        int filterSpacingX = 20;
-        int filterSpacingY = 20;
-        int buttonsPerRow = 5;
+        if (isCompactMode()) {
+            // Narrow vertical filter bar
+            int compactSidebarX = this.width - COMPACT_SIDEBAR_WIDTH - 10;
+            int filterY = SIDEBAR_Y;
 
-        for (int i = 0; i < filterItems.size(); i++) {
-            FilterItem item = filterItems.get(i);
-            int row = i / buttonsPerRow;
-            int col = i % buttonsPerRow;
-            addFilterButton(
-                    item.label,
-                    item.icon,
-                    item.getter,
-                    item.setter,
-                    filterStartX + col * filterSpacingX,
-                    filterStartY + row * filterSpacingY,
-                    16);
+            // "Filters" label (slightly scaled down)
+            Component filterTitle = Component.literal("Filters");
+            float filterScale = 0.75f;
+            int textW = (int) (this.font.width(filterTitle) * filterScale);
+            int textX = compactSidebarX + (COMPACT_SIDEBAR_WIDTH - textW) / 2;
+            this.addRenderableWidget(new TextWidget(textX, filterY, filterTitle, 0xFFFFFFFF, filterScale));
+
+            // Vertically stacked filter icons
+            int buttonSize = 16;
+            int buttonSpacing = 18;
+            int buttonX = compactSidebarX + (COMPACT_SIDEBAR_WIDTH - buttonSize) / 2;
+            int buttonStartY = filterY + 12;
+
+            for (int i = 0; i < filterItems.size(); i++) {
+                FilterItem item = filterItems.get(i);
+                addFilterButton(
+                        item.label,
+                        item.icon,
+                        item.getter,
+                        item.setter,
+                        buttonX,
+                        buttonStartY + i * buttonSpacing,
+                        buttonSize);
+            }
+        } else {
+            // Full-width sidebar with grid layout
+            int sidebarX = this.width - SIDEBAR_WIDTH - 10;
+            int filterY = SIDEBAR_Y;
+
+            // Filter background texture
+            this.addRenderableWidget(new ImageWidget(
+                    sidebarX + 5,
+                    filterY,
+                    Sprite.FILTER_SECTION.width(),
+                    Sprite.FILTER_SECTION.height(),
+                    Sprite.FILTER_SECTION));
+
+            Component filterTitle = Component.literal("Filters");
+            int textW = this.font.width(filterTitle);
+            int textX = (sidebarX + 7) + (Sprite.FILTER_SECTION.width() - textW) / 2;
+            int textY = filterY + 3;
+            this.addRenderableWidget(new TextWidget(textX, textY, filterTitle));
+
+            int filterStartX = sidebarX + 9;
+            int filterStartY = filterY + 18;
+            int filterSpacingX = 20;
+            int filterSpacingY = 20;
+            int buttonsPerRow = 5;
+
+            for (int i = 0; i < filterItems.size(); i++) {
+                FilterItem item = filterItems.get(i);
+                int row = i / buttonsPerRow;
+                int col = i % buttonsPerRow;
+                addFilterButton(
+                        item.label,
+                        item.icon,
+                        item.getter,
+                        item.setter,
+                        filterStartX + col * filterSpacingX,
+                        filterStartY + row * filterSpacingY,
+                        16);
+            }
         }
 
-        // Trigger scale calculation on first open; during window resize it's managed in resize()
-        if (!this.scaleReady) {
+        // Populate the layout based on mode
+        if (isCompactMode()) {
+            populateCompactLayout();
+        } else if (!this.scaleReady) {
+            // Trigger scale calculation on first open; during window resize it's managed in
+            // resize()
             this.triggerRecalc();
         } else {
             populateItemWidgets();
@@ -267,8 +342,25 @@ public class RewardScreen extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float delta) {
         super.render(graphics, mouseX, mouseY, delta);
 
+        // Render compact column content with scissor clipping
+        if (isCompactMode() && !compactClippedWidgets.isEmpty()) {
+            int clipTop = MARGIN_Y + compactHeaderHeight;
+            int clipBottom = this.height - BOTTOM_PADDING;
+            graphics.enableScissor(0, clipTop, this.width, clipBottom);
+            for (WynnventoryButton widget : compactClippedWidgets) {
+                widget.render(graphics, mouseX, mouseY, delta);
+            }
+            graphics.disableScissor();
+        }
+
         for (ItemButton<GuideItemStack> widget : itemWidgets) {
             if (widget.isHovered()) {
+                // In compact mode, suppress tooltips outside the clipped region
+                if (isCompactMode()) {
+                    int clipTop = MARGIN_Y + compactHeaderHeight;
+                    int clipBottom = this.height - BOTTOM_PADDING;
+                    if (mouseY < clipTop || mouseY >= clipBottom) continue;
+                }
                 graphics.setTooltipForNextFrame(this.font, widget.getItemStack(), mouseX, mouseY);
             }
         }
@@ -296,6 +388,15 @@ public class RewardScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double amountX, double amountY) {
+        if (isCompactMode()) {
+            return handleCompactScroll(mouseX, amountY);
+        }
+        int maxPerPage = Math.min(
+                ModConfig.getInstance().getRewardScreenSettings().getMaxPoolsPerPage(), 2 * getCurrentColumns());
+        if (getActivePools().size() <= maxPerPage) {
+            return false;
+        }
+
         if (amountY > 0) {
             scrollLeft();
         } else if (amountY < 0) {
@@ -322,6 +423,11 @@ public class RewardScreen extends Screen {
             scrollIndex = 0;
         }
         this.rebuildWidgets();
+    }
+
+    @Override
+    protected void rebuildWidgets() {
+        super.rebuildWidgets();
     }
 
     @Override
@@ -380,29 +486,55 @@ public class RewardScreen extends Screen {
         if (allActivePools.isEmpty()) return;
 
         int currentColumns = getCurrentColumns();
-        int displayCount = Math.min(currentColumns, allActivePools.size());
+        int maxPerPage =
+                Math.min(ModConfig.getInstance().getRewardScreenSettings().getMaxPoolsPerPage(), 2 * currentColumns);
+        int displayCount = Math.min(maxPerPage, allActivePools.size());
+        int rows = (displayCount <= currentColumns) ? 1 : 2;
         int sectionWidth = contentWidth / currentColumns;
-        int totalPoolsWidth = displayCount * sectionWidth;
-        int centeringOffset = (contentWidth - totalPoolsWidth) / 2;
+
+        int firstRowPools = Math.min(displayCount, currentColumns);
+        int firstRowWidth = firstRowPools * sectionWidth;
+        int rowCenteringOffset = (contentWidth - firstRowWidth) / 2;
 
         for (int i = 0; i < displayCount; i++) {
+            int row = i / currentColumns;
+            int col = i % currentColumns;
+
             int poolIndex = (scrollIndex + i) % allActivePools.size();
             RewardPool pool = allActivePools.get(poolIndex);
-            int currentX = MARGIN_X + centeringOffset + (i * sectionWidth);
+
+            int currentX = MARGIN_X + rowCenteringOffset + (col * sectionWidth);
 
             double poolScale = this.globalPoolScale;
             int headerH = (int) (Sprite.LOOTRUN_POOL_TOP_SECTION.height() * poolScale);
-            int itemsStartY = MARGIN_Y + (int) (headerH * 0.69);
+
+            // Row Y starts at MARGIN_Y + row * (availableSpacePerRow + spacing)
+            int headerW_ = Sprite.LOOTRUN_POOL_TOP_SECTION.width();
+            int bodyW_ = INTERIOR_BODY_WIDTH;
+            int minSectionWidth = Math.max(headerW_, bodyW_);
+
+            // Determine if the chosen scale fits in 1 or 2 rows
+            int scaleRows = (allActivePools.size() * minSectionWidth * this.globalPoolScale <= contentWidth) ? 1 : 2;
+
+            int spacingTotal = (scaleRows > 1) ? ROW_SPACING_Y : 0;
+            int totalAvailableHeight = this.height - MARGIN_Y - BOTTOM_PADDING - spacingTotal;
+            int rowHeightWithSpacing = (totalAvailableHeight / scaleRows) + spacingTotal;
+            int rowYOffset = row * rowHeightWithSpacing;
+
+            int rowTopY = (rows == 1)
+                    ? (this.height - (int) (this.tallestNaturalHeight * this.globalPoolScale)) / 2
+                    : MARGIN_Y + rowYOffset;
+            int itemsStartY = rowTopY + (int) (headerH * 0.69);
 
             createItemButtons(currentX, itemsStartY, pool, sectionWidth, poolScale);
         }
     }
 
-    private void renderPoolHeader(int startX, int sectionWidth, double poolScale, String title) {
+    private void renderPoolHeader(int startX, int startY, int sectionWidth, double poolScale, String title) {
         int headerW = (int) (Sprite.LOOTRUN_POOL_TOP_SECTION.width() * poolScale);
         int headerH = (int) (Sprite.LOOTRUN_POOL_TOP_SECTION.height() * poolScale);
         int headerX = startX + (sectionWidth - headerW) / 2;
-        int headerY = MARGIN_Y;
+        int headerY = startY - (int) (headerH * 0.69);
 
         if (activeType == RewardType.LOOTRUN) {
             this.addRenderableWidget(
@@ -432,13 +564,16 @@ public class RewardScreen extends Screen {
                             .toList();
 
                     List<SectionData> sections = buildSections(filteredItems);
-                    renderSectionsCommon(startX, startY, sections, totalWidth, poolScale, pool);
+                    // Filter out sections that have no items
+                    List<SectionData> activeSections =
+                            sections.stream().filter(sd -> !sd.items.isEmpty()).toList();
+                    renderSectionsCommon(startX, startY, activeSections, totalWidth, poolScale, pool);
                 }));
     }
 
     private int renderSection(
             int startX, int startY, String title, List<SimpleItem> items, int sectionWidth, double poolScale) {
-        // Always render the section header, even if there are no items
+        if (items.isEmpty()) return startY;
 
         // Render header
         int headerW = (int) (Sprite.POOL_MIDDLE_SECTION_HEADER.width() * poolScale);
@@ -489,7 +624,8 @@ public class RewardScreen extends Screen {
                 // We want to center the 16px item in the lower part below the title.
                 y = headerY + headerH - (int) (18 * poolScale);
             } else {
-                // Additional rows are inside their respective middle section backgrounds (22 natural)
+                // Additional rows are inside their respective middle section backgrounds (22
+                // natural)
                 y = headerY + headerH + (row - 1) * middleH + (middleH - itemSize) / 2 + 2;
             }
 
@@ -548,11 +684,24 @@ public class RewardScreen extends Screen {
         return this.width - SIDEBAR_WIDTH - 2 * NAV_BUTTON_WIDTH - IMAGE_BUTTON_PADDING_X - MARGIN_X;
     }
 
-    private int getCurrentColumns() {
+    private int getCurrentColumns(double scale) {
+        // Determine how many pool columns can fit based on available width and current
+        // scale.
+        // We use the larger of the header width and the interior body width as the
+        // minimum section footprint.
         int contentWidth = getContentWidth();
-        double scale = this.scaleReady ? this.globalPoolScale : 1.0;
-        int poolScaledWidth = (int) Math.max(1, Math.round(Sprite.LOOTRUN_POOL_TOP_SECTION.width() * scale));
-        return Math.max(1, contentWidth / poolScaledWidth);
+
+        int headerW = (int) (Sprite.LOOTRUN_POOL_TOP_SECTION.width() * scale);
+        int bodyW = (int) (INTERIOR_BODY_WIDTH * scale);
+        int minSectionWidth = Math.max(headerW, bodyW);
+
+        int cols = Math.max(1, contentWidth / Math.max(1, minSectionWidth));
+        return cols;
+    }
+
+    private int getCurrentColumns() {
+        if (!this.scaleReady) return 5; // Fallback during early init; finalized after scale is ready
+        return getCurrentColumns(this.globalPoolScale);
     }
 
     private GuideItemStack getGuideItemStack(SimpleItem item) {
@@ -572,6 +721,12 @@ public class RewardScreen extends Screen {
 
     // === Vertical-first scaling ===
     private void recalcScaleAsync() {
+        if (isCompactMode()) {
+            this.scaleReady = true;
+            this.recalculating = false;
+            this.minecraft.execute(this::rebuildWidgets);
+            return;
+        }
         this.recalculating = true;
         List<RewardPool> pools = getActivePools();
         if (pools.isEmpty()) {
@@ -616,14 +771,42 @@ public class RewardScreen extends Screen {
             double h = computeNaturalPoolHeight(list);
             if (h > tallest) tallest = h;
         }
+        this.tallestNaturalHeight = tallest;
 
-        double available = (double) this.height - MARGIN_Y - BOTTOM_PADDING;
-        if (tallest <= 0) {
-            tallest =
+        if (this.tallestNaturalHeight <= 0) {
+            this.tallestNaturalHeight =
                     Sprite.LOOTRUN_POOL_TOP_SECTION.height() * TOP_AWNING_OVERLAP + Sprite.POOL_BOTTOM_SECTION.height();
         }
 
-        this.globalPoolScale = available / tallest;
+        // --- Multi-row scaling optimization ---
+        // We want the largest possible scale that fits ALL pools within at most 2 rows.
+        // We evaluate both 1-row and 2-row layouts and pick the one with the larger
+        // resulting scale.
+
+        int headerW = Sprite.LOOTRUN_POOL_TOP_SECTION.width();
+        int bodyW = INTERIOR_BODY_WIDTH;
+        int minSectionWidth = Math.max(headerW, bodyW);
+        int contentWidth = getContentWidth();
+        int totalAvailableHeight = this.height - MARGIN_Y - BOTTOM_PADDING;
+
+        // Option 1: Try to fit all pools in 1 row
+        double s1Vert = (double) totalAvailableHeight / this.tallestNaturalHeight;
+        double s1Horiz = (double) contentWidth / (pools.size() * minSectionWidth);
+        double scale1 = Math.min(1.0, Math.min(s1Vert, s1Horiz));
+
+        // Option 2: Try to fit all pools in 2 rows
+        int poolsPerRow2 = (int) Math.ceil(pools.size() / 2.0);
+        double s2Vert = (double) (totalAvailableHeight - ROW_SPACING_Y) / (2.0 * this.tallestNaturalHeight);
+        double s2Horiz = (double) contentWidth / (poolsPerRow2 * minSectionWidth);
+        double scale2 = Math.min(1.0, Math.min(s2Vert, s2Horiz));
+
+        // Choose the layout that yields the larger scale
+        if (scale1 >= scale2) {
+            this.globalPoolScale = scale1;
+        } else {
+            this.globalPoolScale = scale2;
+        }
+
         this.scaleReady = true;
         this.recalculating = false;
 
@@ -648,6 +831,7 @@ public class RewardScreen extends Screen {
         int sectionsHeight = 0;
         List<SectionData> sections = buildSections(items);
         for (SectionData sd : sections) {
+            if (sd.items.isEmpty()) continue;
             sectionsHeight += sectionHeightForCount(sd.items.size(), ITEMS_PER_ROW, headerH, middleH);
         }
         if (sectionsHeight == 0) return topOverlap + bottomH; // minimal footprint
@@ -655,8 +839,7 @@ public class RewardScreen extends Screen {
     }
 
     private int sectionHeightForCount(int count, int itemsPerRow, int headerH, int middleH) {
-        // Always account for the header height even if the section has no items
-        if (count <= 0) return headerH;
+        if (count <= 0) return 0;
         int rows = (int) Math.ceil(count / (double) itemsPerRow);
         return headerH + Math.max(0, (rows - 1) * middleH);
     }
@@ -705,7 +888,7 @@ public class RewardScreen extends Screen {
             currentY = renderSection(startX, currentY, sd.title, sd.items, totalWidth, poolScale);
         }
         renderBottomSection(startX, currentY, totalWidth, poolScale);
-        renderPoolHeader(startX, totalWidth, poolScale, pool.getShortName());
+        renderPoolHeader(startX, startY, totalWidth, poolScale, pool.getShortName());
     }
 
     private List<GuideDungeonKeyItemStack> getDungeonKeyItemStacks() {
@@ -726,6 +909,168 @@ public class RewardScreen extends Screen {
         }
 
         return dungeonStacks;
+    }
+
+    // === Compact layout methods ===
+
+    private <T extends WynnventoryButton> void addCompactContentWidget(T widget) {
+        this.addWidget(widget);
+        compactClippedWidgets.add(widget);
+    }
+
+    private int getCompactContentWidth() {
+        return this.width - COMPACT_SIDEBAR_WIDTH - 20 - COMPACT_LEFT_MARGIN;
+    }
+
+    private void populateCompactLayout() {
+        List<RewardPool> pools = getActivePools();
+        if (pools.isEmpty()) return;
+
+        this.compactHeaderHeight = (int) Math.ceil(this.font.lineHeight * COMPACT_HEADER_LABEL_SCALE) + 3;
+        this.compactPools = pools;
+        int contentWidth = getCompactContentWidth();
+        int poolCount = pools.size();
+
+        int colWidth =
+                Math.max(COMPACT_COL_MIN_WIDTH, (contentWidth - (poolCount - 1) * COMPACT_COL_SPACING) / poolCount);
+        int totalWidth = poolCount * colWidth + (poolCount - 1) * COMPACT_COL_SPACING;
+        int startX = (contentWidth - totalWidth) / 2 + COMPACT_LEFT_MARGIN;
+
+        this.compactStartX = startX;
+        this.compactColWidth = colWidth;
+
+        for (int i = 0; i < pools.size(); i++) {
+            RewardPool pool = pools.get(i);
+            int colX = startX + i * (colWidth + COMPACT_COL_SPACING);
+            int colLeft = colX - 2;
+            int colTop = MARGIN_Y;
+            int colW = colWidth + 4;
+            int colH = this.height - MARGIN_Y - BOTTOM_PADDING;
+            int borderColor = 0x80808080;
+
+            // Header background (light gray semi-opaque)
+            this.addRenderableWidget(new RectWidget(colLeft, colTop, colW, compactHeaderHeight, borderColor));
+
+            // Column border (skip right border on non-last columns to avoid doubling)
+            this.addRenderableWidget(new RectWidget(colLeft, colTop + colH - 1, colW, 1, borderColor)); // bottom
+            this.addRenderableWidget(new RectWidget(colLeft, colTop, 1, colH, borderColor)); // left
+            if (i == pools.size() - 1) {
+                this.addRenderableWidget(new RectWidget(colLeft + colW - 1, colTop, 1, colH, borderColor)); // right
+            }
+
+            // Pool name header
+            Component poolName = Component.literal(pool.getShortName());
+            int poolTextW = (int) (this.font.width(poolName) * COMPACT_HEADER_LABEL_SCALE);
+            int titleX = colX + (colWidth - poolTextW) / 2;
+            this.addRenderableWidget(
+                    new TextWidget(titleX, colTop + 2, poolName, 0xFFFFFFFF, COMPACT_HEADER_LABEL_SCALE));
+
+            createCompactColumn(colX, colTop + compactHeaderHeight + 2, colWidth, pool);
+        }
+    }
+
+    private void createCompactColumn(int x, int topY, int colWidth, RewardPool pool) {
+        int scrollOffset = compactScrollOffsets.getOrDefault(pool, 0);
+
+        RewardService.INSTANCE.getItems(pool).thenAccept(items -> Minecraft.getInstance()
+                .execute(() -> {
+                    if (getActivePools().stream().noneMatch(p -> p == pool)) return;
+
+                    List<SimpleItem> filtered = items.stream()
+                            .filter(this::matchesFilters)
+                            .filter(item -> {
+                                GuideItemStack stack = getGuideItemStack(item);
+                                return stack != null && !stack.isEmpty();
+                            })
+                            .toList();
+
+                    List<SectionData> sections = buildSections(filtered);
+                    renderCompactSections(x, topY, colWidth, sections, pool, scrollOffset);
+                }));
+    }
+
+    private void renderCompactSections(
+            int x, int topY, int colWidth, List<SectionData> sections, RewardPool pool, int scrollOffset) {
+        int itemsPerRow = Math.max(1, colWidth / COMPACT_ITEM_PITCH);
+        int gridWidth = itemsPerRow * COMPACT_ITEM_PITCH;
+        int leftPad = x + (colWidth - gridWidth) / 2;
+
+        int viewportTop = MARGIN_Y;
+        int viewportBottom = this.height - BOTTOM_PADDING;
+
+        int currentY = topY - scrollOffset;
+
+        boolean firstSection = true;
+        for (SectionData sd : sections) {
+            if (sd.items.isEmpty()) continue;
+
+            // Thin separator line between sections
+            if (!firstSection) {
+                int sepY = currentY;
+                if (sepY > viewportTop && sepY < viewportBottom) {
+                    addCompactContentWidget(new RectWidget(x + 2, sepY, colWidth - 4, 1, 0x20FFFFFF));
+                }
+                currentY += 3;
+            }
+            firstSection = false;
+
+            // Section label
+            int labelY = currentY;
+            if (labelY + COMPACT_SECTION_HEADER_HEIGHT > viewportTop && labelY < viewportBottom) {
+                addCompactContentWidget(new TextWidget(
+                        x + 2, labelY + 1, Component.literal(sd.title), 0xFFFFFFFF, COMPACT_SECTION_LABEL_SCALE));
+            }
+            currentY += COMPACT_SECTION_HEADER_HEIGHT;
+
+            // Items in grid
+            int rows = (int) Math.ceil(sd.items.size() / (double) itemsPerRow);
+            for (int i = 0; i < sd.items.size(); i++) {
+                int row = i / itemsPerRow;
+                int col = i % itemsPerRow;
+                int itemX = leftPad + col * COMPACT_ITEM_PITCH;
+                int itemY = currentY + row * COMPACT_ITEM_PITCH;
+
+                if (itemY + COMPACT_ITEM_SIZE > viewportTop && itemY < viewportBottom) {
+                    GuideItemStack stack = getGuideItemStack(sd.items.get(i));
+                    if (stack != null) {
+                        ItemButton<GuideItemStack> button = new ItemButton<>(
+                                itemX, itemY, COMPACT_ITEM_SIZE, COMPACT_ITEM_SIZE, stack, sd.items.get(i));
+                        addCompactContentWidget(button);
+                        itemWidgets.add(button);
+                    }
+                }
+            }
+            currentY += rows * COMPACT_ITEM_PITCH + 2;
+        }
+
+        // Track total content height for scroll clamping
+        int totalContentHeight = (currentY + scrollOffset) - topY;
+        compactContentHeights.put(pool, totalContentHeight);
+    }
+
+    private boolean handleCompactScroll(double mouseX, double amountY) {
+        if (compactPools.isEmpty()) return false;
+
+        for (int i = 0; i < compactPools.size(); i++) {
+            int colX = compactStartX + i * (compactColWidth + COMPACT_COL_SPACING);
+            if (mouseX >= colX && mouseX < colX + compactColWidth) {
+                RewardPool pool = compactPools.get(i);
+                int current = compactScrollOffsets.getOrDefault(pool, 0);
+                int scrollAmount = (int) (amountY * -20);
+                int newOffset = current + scrollAmount;
+
+                // Clamp scroll
+                int viewportHeight = this.height - MARGIN_Y - BOTTOM_PADDING - compactHeaderHeight - 2;
+                int contentHeight = compactContentHeights.getOrDefault(pool, 0);
+                int maxScroll = Math.max(0, contentHeight - viewportHeight);
+                newOffset = Math.max(0, Math.min(newOffset, maxScroll));
+
+                compactScrollOffsets.put(pool, newOffset);
+                this.rebuildWidgets();
+                return true;
+            }
+        }
+        return false;
     }
 
     // Lightweight inner model to represent a visual section in a pool

@@ -1,6 +1,7 @@
 package com.wynnventory.core.config.settings;
 
 public class RewardScreenSettings {
+    private RewardLayoutMode layoutMode = RewardLayoutMode.DEFAULT;
     private boolean showMythic = true;
     private boolean showFabled = true;
     private boolean showLegendary = true;
@@ -9,6 +10,7 @@ public class RewardScreenSettings {
     private boolean showCommon = true;
     private boolean showSet = true;
     private boolean showUnusable = true;
+    private int maxPoolsPerPage = 10;
 
     public boolean isShowMythic() {
         return showMythic;
@@ -72,5 +74,21 @@ public class RewardScreenSettings {
 
     public void setShowUnusable(boolean showUnusable) {
         this.showUnusable = showUnusable;
+    }
+
+    public RewardLayoutMode getLayoutMode() {
+        return layoutMode;
+    }
+
+    public void setLayoutMode(RewardLayoutMode layoutMode) {
+        this.layoutMode = layoutMode;
+    }
+
+    public int getMaxPoolsPerPage() {
+        return maxPoolsPerPage;
+    }
+
+    public void setMaxPoolsPerPage(int maxPoolsPerPage) {
+        this.maxPoolsPerPage = maxPoolsPerPage;
     }
 }
